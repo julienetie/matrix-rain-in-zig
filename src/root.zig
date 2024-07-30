@@ -1,6 +1,7 @@
 const std = @import("std");
 const raylib = @import("raylib");
 const panic = std.debug.panic;
+const print = std.debug.print;
 
 var prng = std.Random.DefaultPrng.init(42);
 const rand = prng.random();
@@ -44,9 +45,9 @@ const Trail: type = struct {
     depthView: c_int,
     trail_array: []TrailCharacter,
 
-    pub fn init(x: c_int, y: c_int, failSpeed: c_int, textSize: c_int, trailLength: usize, depthView: c_int, textColor: raylib.Color, array: []TrailCharacter) !Trail {
+    pub fn init(x: c_int, y: c_int, fallSpeed: c_int, textSize: c_int, trailLength: usize, depthView: c_int, textColor: raylib.Color, array: []TrailCharacter) !Trail {
         // Unsafe Not Feeling the allocator
-        const allocator = std.heap.page.allocator;
+        const allocator = std.heap.page_allocator;
         const trail_array: []TrailCharacter = allocator.alloc(TrailCharacter, trailLength) catch |err| {
             panic("Error : Unable to allocate memory to {s}, {}", .{ "Trail Character Array", err });
             return undefined;
@@ -133,3 +134,134 @@ const Trail: type = struct {
         }
     }
 };
+
+var screenWidth: c_int = 1500;
+var screenHeight: c_int = 1000;
+const windowTitle = "MaTrIX RaIn";
+const windowFPS: c_int = 30;
+var frameCount: c_int = 0;
+const font_path = "assets/dejavu.fnt";
+const icon_path = "assets/icon.png";
+const globalTextSize: c_int = 30;
+
+pub fn main() void {
+    // Initialization
+    const backgroundColor = raylib.Color.init(40, 44, 52, 100);
+    const textColor = raylib.Color.init(65, 253, 254, 255);
+
+    raylib.initWindow(screenWidth, screenHeight, windowTitle);
+    defer raylib.closeWindow();
+
+    const display = raylib.getCurrentMonitor();
+    screenWidth = raylib.getMonitorWidth(display);
+    screenHeight = raylib.getMonitorHeight(display);
+    raylib.setWindowSize(screenWidth, screenHeight);
+    raylib.toggleFullscreen();
+
+    const image = raylib.Image.init(icon_path);
+    raylib.setWindowIcon(image);
+
+    const font = raylib.Font.init(font_path);
+    while (!font.isReady()) {}
+
+    raylib.setTargetFPS(windowFPS);
+
+    const numberOfTrails: usize = 500;
+    const allocator = std.heap.page_allocator;
+    const trails: []Trail = allocator.alloc(Trail, numberOfTrails) catch |err| {
+        panic("Error : Unable to allocate memory to {s} , {}", .{ "Trails", err });
+        return undefined;
+    };
+    defer allocator.free(trails);
+
+    create_trails(trails, numberOfTrails, textColor);
+
+    // Main game loop
+    while (!raylib.windowShouldClose()) {
+        if (raylib.isKeyPressed(raylib.KeyboardKey.key_q)) {
+            raylib.toggleFullscreen();
+        }
+        raylib.clearBackground(backgroundColor);
+
+        raylib.beginDrawing();
+        defer raylib.endDrawing();
+
+        update_trails(trails, numberOfTrails);
+        draw_trails(trails, numberOfTrails, font);
+
+        frameCount = @mod(frameCount, 1000) + 1;
+    }
+
+    for (0..numberOfTrails) |i| {
+        defer allocator.free(trails[i].trail_array);
+    }
+}
+
+fn create_trails(trails: []Trail, numberOfTrails: usize, textColor: anytype) void {
+    for (0..numberOfTrails) |i| {
+        const x_val = rand_range(0, screenWidth);
+        const y_val = rand_range(-100, screenHeight);
+        const depth = rand_range(0, 4);
+
+        const length = @as(usize, @intCast(rand_range(10, 20)));
+        const allocator = std.heap.page_allocator;
+        var characters: []TrailCharacter = allocator.alloc(TrailCharacter, length) catch |err| {
+            panic("Error : Unable to allocate memory to {s} , {}", .{ "Trail Character Array", err });
+            return undefined;
+        };
+        defer allocator.free(characters);
+
+        for (0..length) |j| {
+            characters[j] = TrailCharacter.init(TrailCharacter.get_random_char(), rand_range(1, 30));
+        }
+        const trail = Trail.init(x_val, y_val, rand_range(10, 20), generateDepthBasedTextSize(globalTextSize, depth), length, depth, textColor, characters) catch |err| {
+            print("{}", .{err});
+            return undefined;
+        };
+        trails[i] = trail;
+    }
+}
+
+fn update_trails(trails: []Trail, numberOfTrails: usize) void {
+    for (0..numberOfTrails) |i| {
+        var newY: c_int = trails[i].getY() + trails[i].getFallSpeed();
+        if ((newY - trails[i].getTextSize() * @as(c_int, @intCast(trails[i].getTrailLength())) > screenHeight) or (trails[i].getX() < 0 or trails[i].getX() > screenWidth)) {
+            newY = rand_range(-100, 0);
+            const depth = rand_range(0, 4);
+            trails[i].setTextSize(generateDepthBasedTextSize(globalTextSize, depth));
+            trails[i].setX(rand_range(0, screenWidth));
+        }
+        trails[i].setY(newY);
+
+        for (0..trails[i].getTrailLength()) |j| {
+            if (@mod(frameCount, trails[i].getTrailArray()[j].getChangeFrame()) == 0) {
+                trails[i].getTrailArray()[j].setCharacter(TrailCharacter.get_random_char());
+            }
+        }
+    }
+}
+
+fn draw_trails(trails: []Trail, numberOfTrails: usize, font: raylib.Font) void {
+    for (0..numberOfTrails) |i| {
+        for (0..trails[i].getTrailLength()) |j| {
+            const opacity = 1.5 * @as(f32, @floatFromInt(trails[i].getTrailLength() - j)) / @as(f32, @floatFromInt(trails[i].getTrailLength()));
+            const pos = raylib.Vector2.init(@as(f32, @floatFromInt(trails[i].getX())), @as(f32, @floatFromInt(trails[i].getY() - @as(c_int, @intCast(j)) * trails[i].getTextSize())));
+            const character = trails[i].trail_array[j].getCharacter();
+            if (j == 0) {
+                raylib.drawTextCodepoint(font, character, pos, @as(f32, @floatFromInt(trails[i].getTextSize())), raylib.Color.init(1, 253, 251, 255));
+            } else {
+                raylib.drawTextCodepoint(font, character, pos, @as(f32, @floatFromInt(trails[i].getTextSize())), trails[i].getTextColor().fade(opacity));
+            }
+        }
+    }
+}
+
+fn generateDepthBasedTextSize(textSize: c_int, depth: c_int) c_int {
+    const depthBasedTextSize: c_int = @divFloor(textSize, depth + 1);
+    return depthBasedTextSize;
+}
+
+fn rand_range(x: c_int, y: c_int) c_int {
+    const num: c_int = rand.intRangeAtMost(c_int, x, y);
+    return num;
+}
